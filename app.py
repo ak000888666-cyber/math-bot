@@ -7,20 +7,24 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
+
 from database import init_db, save_calculation, get_history
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
+# جلب المفاتيح
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
+# إعداد Gemini (الموديل الجديد)
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# الأزرار
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧮 حل مسألة"), KeyboardButton(text="📝 اختبرني")],
@@ -29,27 +33,38 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# دالة التحدث مع Gemini
 async def ask_gemini(prompt):
     try:
         response = await model.generate_content_async(prompt)
         return response.text
     except Exception as e:
         logging.error(f"Gemini Error: {e}")
-        return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
+        return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي. تأكد من صحة مفتاح Gemini."
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("أهلاً بك في **معلم الرياضيات الذكي**! 🧠🧮\n\nاختر من الأزرار تحت 👇", reply_markup=keyboard, parse_mode="Markdown")
+    await message.answer(
+        "أهلاً بك في **معلم الرياضيات الذكي**! 🧠🧮\n\n"
+        "اختر من الأزرار تحت 👇 أو اكتب مسألتك مباشرة.",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
 
 @dp.message(F.text == "ℹ️ مساعدة")
 async def cmd_help(message: types.Message):
-    await message.answer("اكتب أي مسألة رياضية وسأشرحها لك خطوة بخطوة، أو اضغط 'اختبرني' لتجربة سؤال.", reply_markup=keyboard)
+    await message.answer(
+        "• اكتب أي مسألة مثل `2x+5=15` أو `جذر 144` وسأشرح لك الحل.\n"
+        "• اضغط 'اختبرني' لتجربة سؤال.\n"
+        "• اضغط 'سجلي' لمشاهدة آخر عملياتك.",
+        reply_markup=keyboard
+    )
 
 @dp.message(F.text == "💾 سجلي")
 async def cmd_history(message: types.Message):
     history = await get_history(message.from_user.id, limit=5)
     if not history:
-        await message.answer("📭 سجلك فارغ حالياً.")
+        await message.answer("📭 سجلك فارغ حالياً. جرب حل مسألة أولاً!")
         return
     text = "📊 **آخر 5 عمليات لك:**\n\n"
     for item in history:
@@ -58,26 +73,48 @@ async def cmd_history(message: types.Message):
 
 @dp.message(F.text == "🧮 حل مسألة")
 async def ask_math(message: types.Message):
-    await message.answer("✍️ اكتب المسألة الآن:")
+    await message.answer("✍️ اكتب المسألة الآن، وسأشرح لك الحل خطوة بخطوة:")
 
 @dp.message(F.text == "📝 اختبرني")
 async def test_me(message: types.Message):
     await message.answer("⏳ جاري تحضير سؤال...")
-    question = await ask_gemini("أعطني سؤالاً رياضياً واحداً فقط بدون الحل.")
-    await message.answer(f"📝 **سؤالي:**\n\n{question}\n\nاكتب إجابتك:")
+    prompt = "أنت معلم رياضيات. أعطني سؤالاً رياضياً واحداً فقط (بدون الحل) مناسباً لمستوى طالب متوسط. اجعل السؤال قصيراً ومباشراً."
+    question = await ask_gemini(prompt)
+    await message.answer(f"📝 **سؤالي لك:**\n\n{question}\n\nاكتب إجابتك الآن:")
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     text = message.text.strip()
+    
     if text in ["🧮 حل مسألة", "📝 اختبرني", "ℹ️ مساعدة", "💾 سجلي"]:
         return
-    await message.answer("⏳ جاري التفكير...")
-    prompt = f"أنت معلم رياضيات. المستخدم أرسل: '{text}'. إذا كانت مسألة، حلها واشرح خطواتها بالعربي. إذا كانت إجابة، صححها."
-    response_text = await ask_gemini(prompt)
-    await message.answer(response_text)
-    await save_calculation(message.from_user.id, message.from_user.username or "Unknown", "ai_math", text, "تم الحل", [])
 
-# --- هذا الجزء الجديد عشان نرضي Render ---
+    await message.answer("⏳ جاري التفكير...")
+    
+    prompt = f"""
+    أنت معلم رياضيات ذكي ومحترف. 
+    المستخدم أرسل لك هذه الرسالة: "{text}"
+    
+    إذا كانت مسألة رياضية: قم بحلها واشرح الخطوات بالتفصيل وبطريقة بسيطة ومفهومة باللغة العربية.
+    إذا كانت إجابة على سؤال سابق: صحح الإجابة (صح أم خطأ) واشرح السبب.
+    إذا كانت رسالة عادية: رد عليها بود واقترح مساعدة في الرياضيات.
+    
+    اجعل الرد منظماً ومقروءاً.
+    """
+    
+    response_text = await ask_gemini(prompt)
+    await message.answer(response_text, parse_mode="Markdown")
+    
+    await save_calculation(
+        user_id=message.from_user.id,
+        username=message.from_user.username or "Unknown",
+        category="ai_math",
+        expression=text,
+        result="تم الحل بواسطة AI",
+        steps=[]
+    )
+
+# --- جزء Keep-Alive عشان Render ما يطفي البوت ---
 async def health_check(request):
     return web.Response(text="OK")
 
@@ -89,13 +126,18 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Web server started on port {port}")
-# ------------------------------------------
+    print(f"✅ Web server started on port {port}")
 
 async def main():
     await init_db()
-    await start_web_server() # تشغيل السيرفر الوهمي
-    print("🚀 البوت شغال...")
+    
+    # تنظيف أي اتصال قديم (عشان نمنع مشكلة Conflict)
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # تشغيل سيرفر الويب (لإرضاء Render)
+    await start_web_server()
+    
+    print("🚀 البوت شغال الآن...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

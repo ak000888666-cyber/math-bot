@@ -1,5 +1,5 @@
 aiogram
 python-dotenv
 aiosqlite
-google-generativeai
+google-genai
 aiohttp

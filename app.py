@@ -4,26 +4,27 @@ import os
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 from google import genai
+import json
 
 from database import init_db, save_calculation, get_history
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# جلب المفاتيح
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# إعداد Gemini
 client = genai.Client(api_key=GEMINI_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# الأزرار
+# تخزين مؤقت لآخر مسألة واختبارها (في الذاكرة)
+user_sessions = {}
+
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧮 حل مسألة"), KeyboardButton(text="📝 اختبرني")],
@@ -32,7 +33,6 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# دالة التحدث مع Gemini
 async def ask_gemini(prompt):
     try:
         response = client.models.generate_content(
@@ -46,9 +46,10 @@ async def ask_gemini(prompt):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    name = message.from_user.first_name or "عزيزي"
     await message.answer(
-        "أهلاً بك في **معلم الرياضيات الذكي**! 🧠🧮\n\n"
-        "اختر من الأزرار تحت 👇 أو اكتب مسألتك مباشرة.",
+        f"أهلاً يا {name}! 🧠🧮\n\n"
+        "أنا معلم الرياضيات الذكي. اختر من الأزرار تحت 👇 أو اكتب مسألتك مباشرة.",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
@@ -57,7 +58,7 @@ async def cmd_start(message: types.Message):
 async def cmd_help(message: types.Message):
     await message.answer(
         "• اكتب أي مسألة مثل 2x+5=15 أو جذر 144 وسأشرح لك الحل.\n"
-        "• اضغط 'اختبرني' لتجربة سؤال.\n"
+        "• اضغط 'اختبرني' لأختبرك في آخر مسألة حللتها.\n"
         "• اضغط 'سجلي' لمشاهدة آخر عملياتك.",
         reply_markup=keyboard
     )
@@ -75,57 +76,111 @@ async def cmd_history(message: types.Message):
 
 @dp.message(F.text == "🧮 حل مسألة")
 async def ask_math(message: types.Message):
-    await message.answer("✍️ اكتب المسألة الآن، وسأشرح لك الحل خطوة بخطوة:")
+    await message.answer("✍️ اكتب المسألة الآن:")
 
+# هنا نضيف زر الاختبارات الاختيارية
 @dp.message(F.text == "📝 اختبرني")
 async def test_me(message: types.Message):
-    await message.answer("⏳ جاري تحضير سؤال...")
+    user_id = message.from_user.id
     
-    # منع علامات الدولار في السؤال
-    prompt = """أنت معلم رياضيات. أعطني سؤالاً رياضياً واحداً فقط (بدون الحل) مناسباً لمستوى طالب متوسط. 
-    اجعل السؤال قصيراً ومباشراً. 
-    لا تستخدم أي رموز تنسيق مثل $ أو $$ أو \\( أو \\[. اكتب المعادلة كنص عادي ومقروء."""
+    # إذا ما عنده مسألة سابقة، نطلب منه يحل مسألة أولاً
+    if user_id not in user_sessions or "last_math" not in user_sessions[user_id]:
+        await message.answer("💡 عذراً، يجب أن تحل مسألة أولاً حتى أتمكن من اختبارك فيها!")
+        return
+
+    await message.answer("⏳ جاري تحضير سؤال اختيارات بناءً على مسألتك السابقة...")
     
-    question = await ask_gemini(prompt)
+    last_math = user_sessions[user_id]["last_math"]
     
-    # حذفنا parse_mode هنا لتجنب أخطاء التنسيق
-    await message.answer(f"📝 سؤالي لك:\n\n{question}\n\nاكتب إجابتك الآن:")
+    # نطلب من جيميني يعطينا سؤال اختيارات
+    prompt = f"""
+    أنت معلم رياضيات. الطالب حل هذه المسألة سابقاً: "{last_math}"
+    الآن، أعطني سؤالاً مشابهاً أو يعتمد على نفس المفهوم، على شكل اختيارات (أ، ب، ج، د).
+    
+    يجب أن يكون الرد بصيغة JSON بالضبط كالتالي (بدون أي كلام إضافي):
+    {{
+      "question": "نص السؤال هنا",
+      "options": ["خيار 1", "خيار 2", "خيار 3", "خيار 4"],
+      "correct_option_id": 0
+    }}
+    (correct_option_id هو رقم الخيار الصحيح من 0 إلى 3)
+    لا تستخدم أي رموز $ أو $$.
+    """
+    
+    response = await ask_gemini(prompt)
+    try:
+        # تنظيف الرد وتحميله كـ JSON
+        clean_json = response.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_json)
+        
+        # تجهيز الأزرار
+        inline_kb = []
+        labels = ["أ", "ب", "ج", "د"]
+        for i, opt in enumerate(data["options"]):
+            inline_kb.append([InlineKeyboardButton(text=f"{labels[i]}) {opt}", callback_data=f"quiz_{i}_{data['correct_option_id']}")])
+        
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=inline_kb)
+        
+        await message.answer(f"📝 سؤالي لك:\n\n{data['question']}", reply_markup=reply_markup)
+        
+    except Exception as e:
+        logging.error(f"JSON Error: {e} | Response: {response}")
+        await message.answer("⚠️ عذراً، حدث خطأ في تحضير الاختبار.")
+
+# معالجة ضغطات أزرار الاختبار
+@dp.callback_query(F.data.startswith("quiz_"))
+async def process_quiz_answer(callback: types.CallbackQuery):
+    data = callback.data.split("_")
+    selected = int(data[1])
+    correct = int(data[2])
+    
+    if selected == correct:
+        await callback.message.answer("✅ ممتاز! إجابة صحيحة. أحسنت! 🎉")
+    else:
+        await callback.message.answer("❌ إجابة خاطئة. حاول مرة أخرى في المسألة القادمة!")
+        
+    await callback.answer() # لإغلاق التحميل على الزر
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     text = message.text.strip()
+    user_id = message.from_user.id
     
     if text in ["🧮 حل مسألة", "📝 اختبرني", "ℹ️ مساعدة", "💾 سجلي"]:
         return
 
     await message.answer("⏳ جاري التفكير...")
     
-    # منع علامات الدولار في الحل والشرح
+    name = message.from_user.first_name or "عزيزي"
+    
     prompt = f"""أنت معلم رياضيات ذكي ومحترف. 
+    اسم الطالب: {name}
     المستخدم أرسل لك هذه الرسالة: "{text}"
     
-    إذا كانت مسألة رياضية: قم بحلها واشرح الخطوات بالتفصيل وبطريقة بسيطة ومفهومة باللغة العربية.
-    إذا كانت إجابة على سؤال سابق: صحح الإجابة (صح أم خطأ) واشرح السبب.
-    إذا كانت رسالة عادية: رد عليها بود واقترح مساعدة في الرياضيات.
+    إذا كانت مسألة رياضية: قم بحلها واشرح الخطوات بالتفصيل.
+    إذا كانت إجابة على سؤال سابق: صحح الإجابة واشرح السبب.
     
-    اجعل الرد منظماً ومقروءاً. 
-    هام جداً: لا تستخدم أي رموز تنسيق مثل $ أو $$ أو \\( أو \\[ أو غيرها من رموز LaTeX. اكتب جميع المعادلات الرياضية كنص عادي جداً (مثال: 2x + 5 = 15)."""
+    هام جداً: لا تستخدم أي رموز مثل $ أو $$. اكتب المعادلات كنص عادي."""
     
     response_text = await ask_gemini(prompt)
     
-    # إرسال الرد كنص عادي بدون تنسيق
+    # حفظ آخر مسألة في الجلسة عشان الاختبار
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {}
+    user_sessions[user_id]["last_math"] = text
+    
     await message.answer(response_text)
     
     await save_calculation(
-        user_id=message.from_user.id,
+        user_id=user_id,
         username=message.from_user.username or "Unknown",
         category="ai_math",
         expression=text,
-        result="تم الحل بواسطة AI",
+        result="تم الحل",
         steps=[]
     )
 
-# --- جزء Keep-Alive عشان Render ما يطفي البوت ---
+# --- جزء Keep-Alive عشان Render ---
 async def health_check(request):
     return web.Response(text="OK")
 
@@ -141,10 +196,11 @@ async def start_web_server():
 
 async def main():
     await init_db()
+    # تنظيف الويب هوك بشكل صارم
     await bot.delete_webhook(drop_pending_updates=True)
     await start_web_server()
     print("🚀 البوت شغال الآن...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
     asyncio.run(main())

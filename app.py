@@ -1,12 +1,12 @@
 import asyncio
 import logging
 import os
-import google.generativeai as genai
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
+from google import genai
 
 from database import init_db, save_calculation, get_history
 
@@ -17,9 +17,8 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# إعداد Gemini (الموديل الجديد)
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+# إعداد Gemini بالمكتبة الجديدة
+client = genai.Client(api_key=GEMINI_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -36,11 +35,15 @@ keyboard = ReplyKeyboardMarkup(
 # دالة التحدث مع Gemini
 async def ask_gemini(prompt):
     try:
-        response = await model.generate_content_async(prompt)
+        # استخدام الموديل الجديد
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
         return response.text
     except Exception as e:
         logging.error(f"Gemini Error: {e}")
-        return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي. تأكد من صحة مفتاح Gemini."
+        return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):

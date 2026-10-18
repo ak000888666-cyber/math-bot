@@ -13,14 +13,17 @@ from database import init_db, save_calculation, get_history
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
+# جلب المفاتيح
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
+# إعداد Gemini
 client = genai.Client(api_key=GEMINI_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# الأزرار
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧮 حل مسألة"), KeyboardButton(text="📝 اختبرني")],
@@ -29,6 +32,7 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# دالة التحدث مع Gemini
 async def ask_gemini(prompt):
     try:
         response = client.models.generate_content(
@@ -76,9 +80,15 @@ async def ask_math(message: types.Message):
 @dp.message(F.text == "📝 اختبرني")
 async def test_me(message: types.Message):
     await message.answer("⏳ جاري تحضير سؤال...")
-    prompt = "أنت معلم رياضيات. أعطني سؤالاً رياضياً واحداً فقط (بدون الحل) مناسباً لمستوى طالب متوسط. اجعل السؤال قصيراً ومباشراً."
+    
+    # منع علامات الدولار في السؤال
+    prompt = """أنت معلم رياضيات. أعطني سؤالاً رياضياً واحداً فقط (بدون الحل) مناسباً لمستوى طالب متوسط. 
+    اجعل السؤال قصيراً ومباشراً. 
+    لا تستخدم أي رموز تنسيق مثل $ أو $$ أو \\( أو \\[. اكتب المعادلة كنص عادي ومقروء."""
+    
     question = await ask_gemini(prompt)
-    # حذفنا parse_mode هنا أيضاً لتجنب الأخطاء
+    
+    # حذفنا parse_mode هنا لتجنب أخطاء التنسيق
     await message.answer(f"📝 سؤالي لك:\n\n{question}\n\nاكتب إجابتك الآن:")
 
 @dp.message(F.text)
@@ -90,20 +100,20 @@ async def handle_text(message: types.Message):
 
     await message.answer("⏳ جاري التفكير...")
     
-    prompt = f"""
-    أنت معلم رياضيات ذكي ومحترف. 
+    # منع علامات الدولار في الحل والشرح
+    prompt = f"""أنت معلم رياضيات ذكي ومحترف. 
     المستخدم أرسل لك هذه الرسالة: "{text}"
     
     إذا كانت مسألة رياضية: قم بحلها واشرح الخطوات بالتفصيل وبطريقة بسيطة ومفهومة باللغة العربية.
     إذا كانت إجابة على سؤال سابق: صحح الإجابة (صح أم خطأ) واشرح السبب.
     إذا كانت رسالة عادية: رد عليها بود واقترح مساعدة في الرياضيات.
     
-    اجعل الرد منظماً ومقروءاً. لا تستخدم أي رموز تنسيق مثل النجوم أو الأقواس المزدوجة.
-    """
+    اجعل الرد منظماً ومقروءاً. 
+    هام جداً: لا تستخدم أي رموز تنسيق مثل $ أو $$ أو \\( أو \\[ أو غيرها من رموز LaTeX. اكتب جميع المعادلات الرياضية كنص عادي جداً (مثال: 2x + 5 = 15)."""
     
     response_text = await ask_gemini(prompt)
     
-    # التعديل الأهم: إرسال الرد كنص عادي بدون parse_mode
+    # إرسال الرد كنص عادي بدون تنسيق
     await message.answer(response_text)
     
     await save_calculation(
@@ -115,6 +125,7 @@ async def handle_text(message: types.Message):
         steps=[]
     )
 
+# --- جزء Keep-Alive عشان Render ما يطفي البوت ---
 async def health_check(request):
     return web.Response(text="OK")
 

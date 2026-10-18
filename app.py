@@ -1,30 +1,33 @@
 import asyncio
 import logging
 import os
+import json
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 from google import genai
-import json
 
 from database import init_db, save_calculation, get_history
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
+# جلب المفاتيح من إعدادات البيئة
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
+# إعداد عميل جوجل (المكتبة الجديدة)
 client = genai.Client(api_key=GEMINI_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# تخزين مؤقت لآخر مسألة واختبارها (في الذاكرة)
+# قاموس لحفظ آخر مسألة لكل مستخدم (عشان الاختبارات)
 user_sessions = {}
 
+# أزرار الكيبورد الأساسية
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧮 حل مسألة"), KeyboardButton(text="📝 اختبرني")],
@@ -33,6 +36,7 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# دالة التحدث مع Gemini
 async def ask_gemini(prompt):
     try:
         response = client.models.generate_content(
@@ -44,6 +48,7 @@ async def ask_gemini(prompt):
         logging.error(f"Gemini Error: {e}")
         return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
 
+# أمر البدء
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     name = message.from_user.first_name or "عزيزي"
@@ -54,15 +59,19 @@ async def cmd_start(message: types.Message):
         parse_mode="Markdown"
     )
 
+# زر المساعدة
 @dp.message(F.text == "ℹ️ مساعدة")
 async def cmd_help(message: types.Message):
+    name = message.from_user.first_name or "عزيزي"
     await message.answer(
+        f"أهلاً يا {name}، إليك كيف أستطيع مساعدتك:\n\n"
         "• اكتب أي مسألة مثل 2x+5=15 أو جذر 144 وسأشرح لك الحل.\n"
         "• اضغط 'اختبرني' لأختبرك في آخر مسألة حللتها.\n"
         "• اضغط 'سجلي' لمشاهدة آخر عملياتك.",
         reply_markup=keyboard
     )
 
+# زر السجل
 @dp.message(F.text == "💾 سجلي")
 async def cmd_history(message: types.Message):
     history = await get_history(message.from_user.id, limit=5)
@@ -74,84 +83,83 @@ async def cmd_history(message: types.Message):
         text += f"🔹 {item['expression']} = {item['result']}\n"
     await message.answer(text, reply_markup=keyboard)
 
+# زر حل مسألة
 @dp.message(F.text == "🧮 حل مسألة")
 async def ask_math(message: types.Message):
     await message.answer("✍️ اكتب المسألة الآن:")
 
-# هنا نضيف زر الاختبارات الاختيارية
+# زر الاختبار
 @dp.message(F.text == "📝 اختبرني")
 async def test_me(message: types.Message):
     user_id = message.from_user.id
+    name = message.from_user.first_name or "عزيزي"
     
-    # إذا ما عنده مسألة سابقة، نطلب منه يحل مسألة أولاً
     if user_id not in user_sessions or "last_math" not in user_sessions[user_id]:
-        await message.answer("💡 عذراً، يجب أن تحل مسألة أولاً حتى أتمكن من اختبارك فيها!")
+        await message.answer(f"💡 عذراً يا {name}، يجب أن تحل مسألة أولاً حتى أتمكن من اختبارك فيها!")
         return
 
-    await message.answer("⏳ جاري تحضير سؤال اختيارات بناءً على مسألتك السابقة...")
+    await message.answer("⏳ جاري تحضير سؤال اختيارات...")
     
     last_math = user_sessions[user_id]["last_math"]
     
-    # نطلب من جيميني يعطينا سؤال اختيارات
     prompt = f"""
-    أنت معلم رياضيات. الطالب حل هذه المسألة سابقاً: "{last_math}"
+    أنت معلم رياضيات. الطالب (اسمه {name}) حل هذه المسألة سابقاً: "{last_math}"
     الآن، أعطني سؤالاً مشابهاً أو يعتمد على نفس المفهوم، على شكل اختيارات (أ، ب، ج، د).
     
-    يجب أن يكون الرد بصيغة JSON بالضبط كالتالي (بدون أي كلام إضافي):
+    يجب أن يكون الرد بصيغة JSON بالضبط كالتالي (بدون أي كلام إضافي أو علامات مارك داون):
     {{
       "question": "نص السؤال هنا",
       "options": ["خيار 1", "خيار 2", "خيار 3", "خيار 4"],
       "correct_option_id": 0
     }}
     (correct_option_id هو رقم الخيار الصحيح من 0 إلى 3)
-    لا تستخدم أي رموز $ أو $$.
+    لا تستخدم أي رموز $ أو $$ أو LaTeX.
     """
     
     response = await ask_gemini(prompt)
     try:
-        # تنظيف الرد وتحميله كـ JSON
+        # تنظيف الرد من أي علامات مارك داون قد يضيفها الذكاء الاصطناعي
         clean_json = response.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean_json)
         
-        # تجهيز الأزرار
         inline_kb = []
         labels = ["أ", "ب", "ج", "د"]
         for i, opt in enumerate(data["options"]):
             inline_kb.append([InlineKeyboardButton(text=f"{labels[i]}) {opt}", callback_data=f"quiz_{i}_{data['correct_option_id']}")])
         
         reply_markup = InlineKeyboardMarkup(inline_keyboard=inline_kb)
-        
-        await message.answer(f"📝 سؤالي لك:\n\n{data['question']}", reply_markup=reply_markup)
+        await message.answer(f"📝 سؤال لك يا {name}:\n\n{data['question']}", reply_markup=reply_markup)
         
     except Exception as e:
         logging.error(f"JSON Error: {e} | Response: {response}")
-        await message.answer("⚠️ عذراً، حدث خطأ في تحضير الاختبار.")
+        await message.answer("⚠️ عذراً، حدث خطأ في تحضير الاختبار. تأكد من حل مسألة واضحة.")
 
-# معالجة ضغطات أزرار الاختبار
+# معالجة إجابة الاختبار
 @dp.callback_query(F.data.startswith("quiz_"))
 async def process_quiz_answer(callback: types.CallbackQuery):
     data = callback.data.split("_")
     selected = int(data[1])
     correct = int(data[2])
+    name = callback.from_user.first_name or "عزيزي"
     
     if selected == correct:
-        await callback.message.answer("✅ ممتاز! إجابة صحيحة. أحسنت! 🎉")
+        await callback.message.answer(f"✅ ممتاز يا {name}! إجابة صحيحة. أحسنت! 🎉")
     else:
-        await callback.message.answer("❌ إجابة خاطئة. حاول مرة أخرى في المسألة القادمة!")
+        await callback.message.answer(f"❌ للأسف يا {name}، إجابة خاطئة. حاول مرة أخرى في المسألة القادمة!")
         
-    await callback.answer() # لإغلاق التحميل على الزر
+    await callback.answer()
 
+# استقبال أي نص آخر (لحل المسائل)
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     text = message.text.strip()
     user_id = message.from_user.id
+    name = message.from_user.first_name or "عزيزي"
     
     if text in ["🧮 حل مسألة", "📝 اختبرني", "ℹ️ مساعدة", "💾 سجلي"]:
         return
 
-    await message.answer("⏳ جاري التفكير...")
-    
-    name = message.from_user.first_name or "عزيزي"
+    await message.answer(f"⏳ جاري التفكير يا {name}...")
     
     prompt = f"""أنت معلم رياضيات ذكي ومحترف. 
     اسم الطالب: {name}
@@ -164,13 +172,14 @@ async def handle_text(message: types.Message):
     
     response_text = await ask_gemini(prompt)
     
-    # حفظ آخر مسألة في الجلسة عشان الاختبار
+    # حفظ آخر مسألة في الجلسة
     if user_id not in user_sessions:
         user_sessions[user_id] = {}
     user_sessions[user_id]["last_math"] = text
     
     await message.answer(response_text)
     
+    # حفظ في قاعدة البيانات
     await save_calculation(
         user_id=user_id,
         username=message.from_user.username or "Unknown",
@@ -180,7 +189,7 @@ async def handle_text(message: types.Message):
         steps=[]
     )
 
-# --- جزء Keep-Alive عشان Render ---
+# --- جزء Keep-Alive (لإرضاء Render) ---
 async def health_check(request):
     return web.Response(text="OK")
 
@@ -196,7 +205,7 @@ async def start_web_server():
 
 async def main():
     await init_db()
-    # تنظيف الويب هوك بشكل صارم
+    # تنظيف أي تعارض قديم
     await bot.delete_webhook(drop_pending_updates=True)
     await start_web_server()
     print("🚀 البوت شغال الآن...")

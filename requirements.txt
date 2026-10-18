@@ -2,3 +2,4 @@ aiogram
 python-dotenv
 sympy
 aiosqlite
+aiohttp

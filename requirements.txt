@@ -2,3 +2,4 @@ aiogram
 python-dotenv
 aiosqlite
 google-generativeai
+aiohttp

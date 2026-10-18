@@ -13,17 +13,14 @@ from database import init_db, save_calculation, get_history
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# جلب المفاتيح
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# إعداد Gemini بالمكتبة الجديدة
 client = genai.Client(api_key=GEMINI_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# الأزرار
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧮 حل مسألة"), KeyboardButton(text="📝 اختبرني")],
@@ -32,10 +29,8 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# دالة التحدث مع Gemini
 async def ask_gemini(prompt):
     try:
-        # استخدام الموديل الجديد الذي يدعم مفاتيح AQ
         response = client.models.generate_content(
             model='gemini-3.8-flash',
             contents=prompt,
@@ -57,7 +52,7 @@ async def cmd_start(message: types.Message):
 @dp.message(F.text == "ℹ️ مساعدة")
 async def cmd_help(message: types.Message):
     await message.answer(
-        "• اكتب أي مسألة مثل `2x+5=15` أو `جذر 144` وسأشرح لك الحل.\n"
+        "• اكتب أي مسألة مثل 2x+5=15 أو جذر 144 وسأشرح لك الحل.\n"
         "• اضغط 'اختبرني' لتجربة سؤال.\n"
         "• اضغط 'سجلي' لمشاهدة آخر عملياتك.",
         reply_markup=keyboard
@@ -69,10 +64,10 @@ async def cmd_history(message: types.Message):
     if not history:
         await message.answer("📭 سجلك فارغ حالياً. جرب حل مسألة أولاً!")
         return
-    text = "📊 **آخر 5 عمليات لك:**\n\n"
+    text = "📊 آخر 5 عمليات لك:\n\n"
     for item in history:
-        text += f"🔹 `{item['expression']}` = **{item['result']}**\n"
-    await message.answer(text, parse_mode="Markdown")
+        text += f"🔹 {item['expression']} = {item['result']}\n"
+    await message.answer(text, reply_markup=keyboard)
 
 @dp.message(F.text == "🧮 حل مسألة")
 async def ask_math(message: types.Message):
@@ -83,7 +78,8 @@ async def test_me(message: types.Message):
     await message.answer("⏳ جاري تحضير سؤال...")
     prompt = "أنت معلم رياضيات. أعطني سؤالاً رياضياً واحداً فقط (بدون الحل) مناسباً لمستوى طالب متوسط. اجعل السؤال قصيراً ومباشراً."
     question = await ask_gemini(prompt)
-    await message.answer(f"📝 **سؤالي لك:**\n\n{question}\n\nاكتب إجابتك الآن:")
+    # حذفنا parse_mode هنا أيضاً لتجنب الأخطاء
+    await message.answer(f"📝 سؤالي لك:\n\n{question}\n\nاكتب إجابتك الآن:")
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):
@@ -102,11 +98,13 @@ async def handle_text(message: types.Message):
     إذا كانت إجابة على سؤال سابق: صحح الإجابة (صح أم خطأ) واشرح السبب.
     إذا كانت رسالة عادية: رد عليها بود واقترح مساعدة في الرياضيات.
     
-    اجعل الرد منظماً ومقروءاً.
+    اجعل الرد منظماً ومقروءاً. لا تستخدم أي رموز تنسيق مثل النجوم أو الأقواس المزدوجة.
     """
     
     response_text = await ask_gemini(prompt)
-    await message.answer(response_text, parse_mode="Markdown")
+    
+    # التعديل الأهم: إرسال الرد كنص عادي بدون parse_mode
+    await message.answer(response_text)
     
     await save_calculation(
         user_id=message.from_user.id,
@@ -117,7 +115,6 @@ async def handle_text(message: types.Message):
         steps=[]
     )
 
-# --- جزء Keep-Alive عشان Render ما يطفي البوت ---
 async def health_check(request):
     return web.Response(text="OK")
 
@@ -133,13 +130,8 @@ async def start_web_server():
 
 async def main():
     await init_db()
-    
-    # تنظيف أي اتصال قديم (عشان نمنع مشكلة Conflict)
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # تشغيل سيرفر الويب (لإرضاء Render)
     await start_web_server()
-    
     print("🚀 البوت شغال الآن...")
     await dp.start_polling(bot)
 

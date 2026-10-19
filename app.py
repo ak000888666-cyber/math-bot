@@ -15,15 +15,33 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-client = genai.Client(api_key=GEMINI_KEY)
+# --- نظام تبديل المفاتيح التلقائي ---
+# نضع المفاتيح في قائمة. تأكد من إضافتها في Render كمتغيرات بيئة
+# GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3 ... إلخ
+raw_keys = []
+for i in range(1, 6): # يدعم حتى 5 مفاتيح
+    key = os.getenv(f"GEMINI_API_KEY_{i}")
+    if key:
+        raw_keys.append(key)
+
+if not raw_keys:
+    # في حال وجود مفتاح واحد فقط بالاسم القديم
+    old_key = os.getenv("GEMINI_API_KEY")
+    if old_key:
+        raw_keys.append(old_key)
+    else:
+        raise ValueError("لا يوجد أي مفتاح Gemini في متغيرات البيئة!")
+
+current_key_index = 0
+client = genai.Client(api_key=raw_keys[current_key_index])
+# ------------------------------------
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 user_sessions = {}
-user_locks = {} # <--- قفل لمنع الطلبات المتكررة
+user_locks = {} 
 
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -33,28 +51,36 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# دالة التحدث مع Gemini مع تبديل المفاتيح
 async def ask_gemini(prompt):
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt,
-        )
-        return response.text
-    except Exception as e:
-        logging.error(f"Gemini Error: {e}")
-        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-            logging.info("Rate limit hit, waiting 10 seconds before retry...")
-            await asyncio.sleep(10)
-            try:
-                response = client.models.generate_content(
-                    model='gemini-3.8-flash',
-                    contents=prompt,
-                )
-                return response.text
-            except Exception as e2:
-                logging.error(f"Gemini Retry Error: {e2}")
-                return "⚠️ عذراً، الضغط على الخدمة عالي حالياً. جرب بعد شوي."
-        return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
+    global current_key_index, client
+    
+    max_attempts = len(raw_keys) * 2 # نحاول مع كل مفتاح مرتين
+    attempts = 0
+    
+    while attempts < max_attempts:
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt,
+            )
+            return response.text
+        except Exception as e:
+            error_str = str(e)
+            logging.error(f"Gemini Error with key index {current_key_index}: {error_str}")
+            
+            # إذا كان الخطأ هو تجاوز الحد (429) أو نفاد الموارد
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                current_key_index = (current_key_index + 1) % len(raw_keys) # التبديل للمفتاح التالي
+                logging.info(f"Switching to API Key Index: {current_key_index}")
+                client = genai.Client(api_key=raw_keys[current_key_index])
+                attempts += 1
+                await asyncio.sleep(2) # انتظار بسيط قبل المحاولة بالمفتاح الجديد
+            else:
+                # إذا كان خطأ آخر، لا داعي للتبديل
+                return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
+                
+    return "⚠️ عذراً، جميع المفاتيح وصلت للحد الأقصى. جرب بعد شوي."
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -134,7 +160,7 @@ async def test_me(message: types.Message):
         
     except Exception as e:
         logging.error(f"JSON Error: {e} | Response: {response}")
-        await message.answer("⚠️ عذراً، حدث خطأ في تحضير الاختبار.")
+        await message.answer("⚠️ عذراً، حدث خطأ في تحضير الاختبار. تأكد من حل مسألة واضحة.")
 
 @dp.callback_query(F.data.startswith("quiz_"))
 async def process_quiz_answer(callback: types.CallbackQuery):
@@ -211,7 +237,7 @@ async def start_web_server():
 async def main():
     await init_db()
     await start_web_server()
-    print("🚀 البوت شغال الآن...")
+    print(f"🚀 البوت شغال الآن... ({len(raw_keys)} مفاتيح جاهزة)")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":

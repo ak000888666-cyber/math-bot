@@ -49,7 +49,7 @@ async def ask_ai(prompt):
                     "content": prompt
                 }
             ],
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b", # تم تحديث الموديل هنا
             temperature=0.3,
         )
         return chat_completion.choices[0].message.content

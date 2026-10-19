@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import json
+import httpx
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -17,8 +18,9 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# إعداد عميل Groq
-client = AsyncGroq(api_key=GROQ_API_KEY)
+# إعداد عميل Groq مع تجاهل إعدادات البروكسي في Render
+http_client = httpx.AsyncClient(trust_env=False)
+client = AsyncGroq(api_key=GROQ_API_KEY, http_client=http_client)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()

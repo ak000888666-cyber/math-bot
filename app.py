@@ -14,20 +14,17 @@ from database import init_db, save_calculation, get_history
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# جلب المفاتيح
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# إعداد جوجل
 client = genai.Client(api_key=GEMINI_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# حفظ آخر مسألة للمستخدم عشان الاختبارات
 user_sessions = {}
+user_locks = {} # <--- قفل لمنع الطلبات المتكررة
 
-# الأزرار
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧮 حل مسألة"), KeyboardButton(text="📝 اختبرني")],
@@ -36,7 +33,6 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# دالة التحدث مع Gemini (مع محاولة ثانية لو صار ضغط)
 async def ask_gemini(prompt):
     try:
         response = client.models.generate_content(
@@ -46,7 +42,6 @@ async def ask_gemini(prompt):
         return response.text
     except Exception as e:
         logging.error(f"Gemini Error: {e}")
-        # إذا كان الخطأ بسبب تجاوز الحد (429) ننتظر ونحاول مرة ثانية
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
             logging.info("Rate limit hit, waiting 10 seconds before retry...")
             await asyncio.sleep(10)
@@ -61,7 +56,6 @@ async def ask_gemini(prompt):
                 return "⚠️ عذراً، الضغط على الخدمة عالي حالياً. جرب بعد شوي."
         return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
 
-# أمر البدء
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     name = message.from_user.first_name or "عزيزي"
@@ -72,7 +66,6 @@ async def cmd_start(message: types.Message):
         parse_mode="Markdown"
     )
 
-# زر المساعدة
 @dp.message(F.text == "ℹ️ مساعدة")
 async def cmd_help(message: types.Message):
     name = message.from_user.first_name or "عزيزي"
@@ -84,7 +77,6 @@ async def cmd_help(message: types.Message):
         reply_markup=keyboard
     )
 
-# زر السجل
 @dp.message(F.text == "💾 سجلي")
 async def cmd_history(message: types.Message):
     history = await get_history(message.from_user.id, limit=5)
@@ -96,12 +88,10 @@ async def cmd_history(message: types.Message):
         text += f"🔹 {item['expression']} = {item['result']}\n"
     await message.answer(text, reply_markup=keyboard)
 
-# زر حل مسألة
 @dp.message(F.text == "🧮 حل مسألة")
 async def ask_math(message: types.Message):
     await message.answer("✍️ اكتب المسألة الآن:")
 
-# زر الاختبار
 @dp.message(F.text == "📝 اختبرني")
 async def test_me(message: types.Message):
     user_id = message.from_user.id
@@ -144,9 +134,8 @@ async def test_me(message: types.Message):
         
     except Exception as e:
         logging.error(f"JSON Error: {e} | Response: {response}")
-        await message.answer("⚠️ عذراً، حدث خطأ في تحضير الاختبار. تأكد من حل مسألة واضحة.")
+        await message.answer("⚠️ عذراً، حدث خطأ في تحضير الاختبار.")
 
-# معالجة إجابة الاختبار
 @dp.callback_query(F.data.startswith("quiz_"))
 async def process_quiz_answer(callback: types.CallbackQuery):
     data = callback.data.split("_")
@@ -161,16 +150,19 @@ async def process_quiz_answer(callback: types.CallbackQuery):
         
     await callback.answer()
 
-# استقبال أي نص (لحل المسائل)
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     text = message.text.strip()
     user_id = message.from_user.id
     name = message.from_user.first_name or "عزيزي"
     
-    # تجاهل الأزرار والأوامر
     if text in ["🧮 حل مسألة", "📝 اختبرني", "ℹ️ مساعدة", "💾 سجلي"] or text.startswith("/"):
         return
+
+    # 🛑 القفل: إذا كان المستخدم يرسل طلب، نتجاهل الطلب الجديد
+    if user_id in user_locks and user_locks[user_id]:
+        return 
+    user_locks[user_id] = True
 
     await message.answer(f"⏳ جاري التفكير يا {name}...")
     
@@ -185,14 +177,12 @@ async def handle_text(message: types.Message):
     
     response_text = await ask_gemini(prompt)
     
-    # حفظ آخر مسألة في الجلسة
     if user_id not in user_sessions:
         user_sessions[user_id] = {}
     user_sessions[user_id]["last_math"] = text
     
     await message.answer(response_text)
     
-    # حفظ في قاعدة البيانات
     await save_calculation(
         user_id=user_id,
         username=message.from_user.username or "Unknown",
@@ -202,7 +192,9 @@ async def handle_text(message: types.Message):
         steps=[]
     )
 
-# --- جزء Keep-Alive (لإرضاء Render) ---
+    # 🔓 فتح القفل بعد الانتهاء
+    user_locks[user_id] = False
+
 async def health_check(request):
     return web.Response(text="OK")
 

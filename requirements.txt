@@ -1,6 +1,5 @@
 aiogram
 python-dotenv
 aiosqlite
-google-genai
+groq
 aiohttp
-httpx

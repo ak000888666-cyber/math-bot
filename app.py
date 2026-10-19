@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-from google import genai
+from groq import AsyncGroq
 
 from database import init_db, save_calculation, get_history
 
@@ -15,27 +15,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# --- نظام تبديل المفاتيح التلقائي ---
-# نضع المفاتيح في قائمة. تأكد من إضافتها في Render كمتغيرات بيئة
-# GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3 ... إلخ
-raw_keys = []
-for i in range(1, 6): # يدعم حتى 5 مفاتيح
-    key = os.getenv(f"GEMINI_API_KEY_{i}")
-    if key:
-        raw_keys.append(key)
-
-if not raw_keys:
-    # في حال وجود مفتاح واحد فقط بالاسم القديم
-    old_key = os.getenv("GEMINI_API_KEY")
-    if old_key:
-        raw_keys.append(old_key)
-    else:
-        raise ValueError("لا يوجد أي مفتاح Gemini في متغيرات البيئة!")
-
-current_key_index = 0
-client = genai.Client(api_key=raw_keys[current_key_index])
-# ------------------------------------
+# إعداد عميل Groq
+client = AsyncGroq(api_key=GROQ_API_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -51,36 +34,26 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# دالة التحدث مع Gemini مع تبديل المفاتيح
-async def ask_gemini(prompt):
-    global current_key_index, client
-    
-    max_attempts = len(raw_keys) * 2 # نحاول مع كل مفتاح مرتين
-    attempts = 0
-    
-    while attempts < max_attempts:
-        try:
-            response = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=prompt,
-            )
-            return response.text
-        except Exception as e:
-            error_str = str(e)
-            logging.error(f"Gemini Error with key index {current_key_index}: {error_str}")
-            
-            # إذا كان الخطأ هو تجاوز الحد (429) أو نفاد الموارد
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                current_key_index = (current_key_index + 1) % len(raw_keys) # التبديل للمفتاح التالي
-                logging.info(f"Switching to API Key Index: {current_key_index}")
-                client = genai.Client(api_key=raw_keys[current_key_index])
-                attempts += 1
-                await asyncio.sleep(2) # انتظار بسيط قبل المحاولة بالمفتاح الجديد
-            else:
-                # إذا كان خطأ آخر، لا داعي للتبديل
-                return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
-                
-    return "⚠️ عذراً، جميع المفاتيح وصلت للحد الأقصى. جرب بعد شوي."
+async def ask_ai(prompt):
+    try:
+        chat_completion = await client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "أنت معلم رياضيات ذكي ومحترف. اشرح الخطوات بالتفصيل وباللغة العربية. لا تستخدم رموز التنسيق مثل $ أو $$."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        logging.error(f"Groq Error: {e}")
+        return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي. جرب بعد شوي."
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -132,7 +105,7 @@ async def test_me(message: types.Message):
     last_math = user_sessions[user_id]["last_math"]
     
     prompt = f"""
-    أنت معلم رياضيات. الطالب (اسمه {name}) حل هذه المسألة سابقاً: "{last_math}"
+    الطالب (اسمه {name}) حل هذه المسألة سابقاً: "{last_math}"
     الآن، أعطني سؤالاً مشابهاً أو يعتمد على نفس المفهوم، على شكل اختيارات (أ، ب، ج، د).
     
     يجب أن يكون الرد بصيغة JSON بالضبط كالتالي (بدون أي كلام إضافي أو علامات مارك داون):
@@ -145,7 +118,7 @@ async def test_me(message: types.Message):
     لا تستخدم أي رموز $ أو $$ أو LaTeX.
     """
     
-    response = await ask_gemini(prompt)
+    response = await ask_ai(prompt)
     try:
         clean_json = response.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean_json)
@@ -185,23 +158,15 @@ async def handle_text(message: types.Message):
     if text in ["🧮 حل مسألة", "📝 اختبرني", "ℹ️ مساعدة", "💾 سجلي"] or text.startswith("/"):
         return
 
-    # 🛑 القفل: إذا كان المستخدم يرسل طلب، نتجاهل الطلب الجديد
     if user_id in user_locks and user_locks[user_id]:
         return 
     user_locks[user_id] = True
 
     await message.answer(f"⏳ جاري التفكير يا {name}...")
     
-    prompt = f"""أنت معلم رياضيات ذكي ومحترف. 
-    اسم الطالب: {name}
-    المستخدم أرسل لك هذه الرسالة: "{text}"
+    prompt = f"المستخدم أرسل لك هذه الرسالة: '{text}'. إذا كانت مسألة رياضية، حلها واشرح الخطوات بالتفصيل."
     
-    إذا كانت مسألة رياضية: قم بحلها واشرح الخطوات بالتفصيل.
-    إذا كانت إجابة على سؤال سابق: صحح الإجابة واشرح السبب.
-    
-    هام جداً: لا تستخدم أي رموز مثل $ أو $$. اكتب المعادلات كنص عادي."""
-    
-    response_text = await ask_gemini(prompt)
+    response_text = await ask_ai(prompt)
     
     if user_id not in user_sessions:
         user_sessions[user_id] = {}
@@ -218,7 +183,6 @@ async def handle_text(message: types.Message):
         steps=[]
     )
 
-    # 🔓 فتح القفل بعد الانتهاء
     user_locks[user_id] = False
 
 async def health_check(request):
@@ -237,7 +201,7 @@ async def start_web_server():
 async def main():
     await init_db()
     await start_web_server()
-    print(f"🚀 البوت شغال الآن... ({len(raw_keys)} مفاتيح جاهزة)")
+    print("🚀 البوت شغال الآن باستخدام Groq...")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":

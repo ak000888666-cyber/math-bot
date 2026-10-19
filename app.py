@@ -14,20 +14,20 @@ from database import init_db, save_calculation, get_history
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# جلب المفاتيح من إعدادات البيئة
+# جلب المفاتيح
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# إعداد عميل جوجل (المكتبة الجديدة)
+# إعداد جوجل
 client = genai.Client(api_key=GEMINI_KEY)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# قاموس لحفظ آخر مسألة لكل مستخدم (عشان الاختبارات)
+# حفظ آخر مسألة للمستخدم عشان الاختبارات
 user_sessions = {}
 
-# أزرار الكيبورد الأساسية
+# الأزرار
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧮 حل مسألة"), KeyboardButton(text="📝 اختبرني")],
@@ -36,7 +36,7 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# دالة التحدث مع Gemini
+# دالة التحدث مع Gemini (مع محاولة ثانية لو صار ضغط)
 async def ask_gemini(prompt):
     try:
         response = client.models.generate_content(
@@ -46,6 +46,19 @@ async def ask_gemini(prompt):
         return response.text
     except Exception as e:
         logging.error(f"Gemini Error: {e}")
+        # إذا كان الخطأ بسبب تجاوز الحد (429) ننتظر ونحاول مرة ثانية
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            logging.info("Rate limit hit, waiting 10 seconds before retry...")
+            await asyncio.sleep(10)
+            try:
+                response = client.models.generate_content(
+                    model='gemini-3.8-flash',
+                    contents=prompt,
+                )
+                return response.text
+            except Exception as e2:
+                logging.error(f"Gemini Retry Error: {e2}")
+                return "⚠️ عذراً، الضغط على الخدمة عالي حالياً. جرب بعد شوي."
         return "⚠️ عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي."
 
 # أمر البدء
@@ -65,7 +78,7 @@ async def cmd_help(message: types.Message):
     name = message.from_user.first_name or "عزيزي"
     await message.answer(
         f"أهلاً يا {name}، إليك كيف أستطيع مساعدتك:\n\n"
-        "• اكتب أي مسألة مثل 2x+5=15 أو جذر 144 وسأشرح لك الحل.\n"
+        "• اكتب أي مسألة (حساب، جبر، تحويل أنظمة) وسأشرح لك الحل.\n"
         "• اضغط 'اختبرني' لأختبرك في آخر مسألة حللتها.\n"
         "• اضغط 'سجلي' لمشاهدة آخر عملياتك.",
         reply_markup=keyboard
@@ -118,7 +131,6 @@ async def test_me(message: types.Message):
     
     response = await ask_gemini(prompt)
     try:
-        # تنظيف الرد من أي علامات مارك داون قد يضيفها الذكاء الاصطناعي
         clean_json = response.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean_json)
         
@@ -149,14 +161,15 @@ async def process_quiz_answer(callback: types.CallbackQuery):
         
     await callback.answer()
 
-# استقبال أي نص آخر (لحل المسائل)
+# استقبال أي نص (لحل المسائل)
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     text = message.text.strip()
     user_id = message.from_user.id
     name = message.from_user.first_name or "عزيزي"
     
-    if text in ["🧮 حل مسألة", "📝 اختبرني", "ℹ️ مساعدة", "💾 سجلي"]:
+    # تجاهل الأزرار والأوامر
+    if text in ["🧮 حل مسألة", "📝 اختبرني", "ℹ️ مساعدة", "💾 سجلي"] or text.startswith("/"):
         return
 
     await message.answer(f"⏳ جاري التفكير يا {name}...")
@@ -205,8 +218,6 @@ async def start_web_server():
 
 async def main():
     await init_db()
-    # تنظيف أي تعارض قديم
-    await bot.delete_webhook(drop_pending_updates=True)
     await start_web_server()
     print("🚀 البوت شغال الآن...")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

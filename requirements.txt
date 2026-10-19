@@ -3,4 +3,4 @@ python-dotenv
 aiosqlite
 google-genai
 aiohttp
-gemini-api-rotator
+httpx
